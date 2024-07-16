@@ -1,12 +1,13 @@
-function standardizeBookEntries(sheet, headers, data, lastRow) {
+function standardizeBookEntries(sheet, headers, data, lastRow, formattedDateTime) {
+
+  //bookEnteries = data.map(row => [row[colIndexes.title],row[colIndexes.author]])
 
   const colIndexes = {
     title: headers.indexOf("Book Title:"),
     author: headers.indexOf("Book Author:"),
-    reviewed: headers.indexOf("Reviewed")
+    reviewed: headers.indexOf("Reviewed"),
+    lastReviewed: headers.indexOf("Last Reviewed:")
   };
-
-  //bookEnteries = data.map(row => [row[colIndexes.title],row[colIndexes.author]])
 
   const standardValues = [];
   const apiEndpoint = "https://www.googleapis.com/books/v1/volumes?q=";
@@ -33,40 +34,21 @@ function standardizeBookEntries(sheet, headers, data, lastRow) {
   });
 
   // Update in Batches
-  sheet.getRange(lastRow, 1, data.length, data[0].length).setValues(
-    data.map((row, i) => 
-      row.map((val, j) => 
-        j === colIndexes.title ? standardValues[i][0] : (j === colIndexes.author ? standardValues[i][1] : val)
-      )
-    )
-  );
-
-  // Adding "Last Reviewed" Logic
-  const now = new Date();
-  const formattedDateTime = Utilities.formatDate(now, Session.getScriptTimeZone(), "MM/dd/yyyy HH:mm:ss");
-
-  // Incorporate Last Reviewed into standardValues 
-  standardValues.forEach(entry => {
-    entry.push(formattedDateTime);  
+  const targetRange = sheet.getRange(lastRow, 1, data.length, data[0].length);
+  const updatedData = data.map((row, i) => {
+  const [title, author] = standardValues[i]; // Destructuring
+    return row.map((val, j) => {
+      const colIndex = colIndexes[j]; // Use index look-up
+      return colIndex === 'title' ? title :
+             colIndex === 'author' ? author : 
+             colIndex === 'lastReviewed' ? formattedDateTime : val; 
+    });
   });
-
-  // add header to the end for the last reviewed column
-  headers.push("Last Reviewed:"); 
- 
- //find or create last reviewed column
-  const lastReviewedColIndex = headers.indexOf("Last Reviewed:");
-  if (lastReviewedColIndex === -1) {
-    sheet.appendRow(headers);
-    lastReviewedColIndex = headers.length - 1;
-  }
-
-  // Write back to the sheet (including Last Reviewed)
-  const range = sheet.getRange(2, 1, standardValues.length, standardValues[0].length); // Start from row 2
-  range.setValues(standardValues);
+  targetRange.setValues(updatedData); 
 
 }
 
-function processData(sheet, maxRows, batchSize, headers) {
+function processData(sheet, maxRows, batchSize, headers, formattedDateTime) {
 
   let lastRow = parseInt(PropertiesService.getScriptProperties().getProperty('lastProcessedRow')) || 2; // Start from last processed row or 2 (after header)
 
@@ -93,14 +75,16 @@ function processData(sheet, maxRows, batchSize, headers) {
     
     if (endRow < maxRows) { // If not all rows processed, trigger again
       Utilities.sleep(1000); // 1 second delay to avoid trigger limits
-      processData(sheet, maxRows, batchSize, headers); 
+      processData(sheet, maxRows, batchSize, headers, formattedDateTime); 
       return; 
     } 
   }
 }
 
-// Function created to run tests with. It wipes previous data and starts fresh.
 function runStandardizationService(){
+  // Setup
+  // steps run once
+
   console.time("processData");
 
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Dashboard source");
@@ -108,11 +92,15 @@ function runStandardizationService(){
   const batchSize = 500; // Number of rows to process per batch
   const [headers, ...data_unused] = sheet.getDataRange().getValues();
 
+  // Add "Last Reviewed" timestamp
+  const now = new Date();
+  const formattedDateTime = Utilities.formatDate(now, Session.getScriptTimeZone(), "MM/dd/yyyy HH:mm:ss");
+
   // If all rows are processed, reset 'lastProcessedRow'
   // Use only for testing.
-  // PropertiesService.getScriptProperties().deleteProperty('lastProcessedRow'); 
+  PropertiesService.getScriptProperties().deleteProperty('lastProcessedRow'); 
 
-  processData(sheet, maxRows, batchSize, headers);
+  processData(sheet, maxRows, batchSize, headers, formattedDateTime);
   
   console.timeEnd("processData");
 
