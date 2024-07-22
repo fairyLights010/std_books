@@ -1,115 +1,96 @@
-function standardizeBookEntries(sheet, headers, data, lastRow, formattedDateTime) {
+function standardizeBookEntries(colIndexes, data) {
+  const responses = UrlFetchApp.fetchAll(
+    data.map(row => {
+      const title = row[colIndexes['book title']];
+      const author = row[colIndexes['book author']];
+      return {
+        url: `https://www.googleapis.com/books/v1/volumes?q=intitle:${encodeURIComponent(title)}+inauthor:${encodeURIComponent(author)}&maxResults:1&orderBy:relevance&country=US`,
+        muteHttpExceptions: true // Handle errors
+      };
+    })
+  );
 
-  //bookEnteries = data.map(row => [row[colIndexes.title],row[colIndexes.author]])
+  const standardValues = responses.map((res, i) => {
+    const json = JSON.parse(res.getContentText());
 
-  const colIndexes = {
-    title: headers.indexOf("Book Title:"),
-    author: headers.indexOf("Book Author:"),
-    reviewed: headers.indexOf("Reviewed"),
-    lastReviewed: headers.indexOf("Last Reviewed:")
-  };
+    if (json.totalItems && json.items?.[0]?.volumeInfo){
+      const volumeInfo = json.items[0].volumeInfo;
 
-  const standardValues = [];
-  const apiEndpoint = "https://www.googleapis.com/books/v1/volumes?q=";
-  const fetchUrls = data.map((row) => {
-    const title = row[colIndexes.title];
-    const author = row[colIndexes.author];
-    return `${apiEndpoint}intitle:${encodeURIComponent(title)}+inauthor:${encodeURIComponent(author)}&country=US`;
+      const title = volumeInfo.subtitle 
+            ? `${volumeInfo.title}: ${volumeInfo.subtitle}` // Combine title and subtitle
+            : volumeInfo.title || data[i][colIndexes['book title']];
+      const author = json.items[0].volumeInfo.authors?.[0] || data[i][colIndexes['book author']];
+
+      return [title, author];
+
+    } else {
+      return [data[i][colIndexes['book title']], data[i][colIndexes['book author']]];
+    }
   });
 
-  // Batch API Calls
-  const responses = UrlFetchApp.fetchAll(fetchUrls);
-
-  data.forEach((row, rowIndex) => {
-    const origTitle = row[colIndexes.title];
-    const origAuthor = row[colIndexes.author];
-    const json = JSON.parse(responses[rowIndex].getContentText());
-    const { title, author } = json.totalItems && json.items?.[0]?.volumeInfo ? {
-      title: json.items[0].volumeInfo.title,
-      author: json.items[0].volumeInfo.authors?.[0] || origAuthor
-    } : { title: origTitle, author: origAuthor };
-
-    standardValues.push([title, author]);
-  
-  });
-
-  // Update in Batches
-  const targetRange = sheet.getRange(lastRow, 1, data.length, data[0].length);
-  const updatedData = data.map((row, i) => {
-  const [title, author] = standardValues[i]; // Destructuring
-    return row.map((val, j) => {
-      const colIndex = colIndexes[j]; // Use index look-up
-      return colIndex === 'title' ? title :
-             colIndex === 'author' ? author : 
-             colIndex === 'lastReviewed' ? formattedDateTime : val; 
-    });
-  });
-  targetRange.setValues(updatedData); 
+  return standardValues;
 
 }
 
-function processData(sheet, maxRows, batchSize, headers, formattedDateTime) {
-
+function processData(sheet, maxRows, batchSize, colIndexes, formattedDateTime, newSheet) {
   let lastRow = parseInt(PropertiesService.getScriptProperties().getProperty('lastProcessedRow')) || 2; // Start from last processed row or 2 (after header)
 
-  for (; lastRow <= maxRows; lastRow += batchSize) {
-    const endRow = Math.min(lastRow + batchSize - 1, maxRows); 
-    const numRows = endRow - lastRow + 1; // Calculate numRows separately
-
-    // Check if we have any rows to process in this batch
-    if (numRows <= 0) {
-      break; // Exit the loop if no more rows to process
-    }
-
-    const range = sheet.getRange(lastRow, 1, numRows, sheet.getLastColumn());
+  while (lastRow <= maxRows) {
+    const endRow = Math.min(lastRow + batchSize - 1, maxRows);
+    const range = sheet.getRange(lastRow, 1, endRow - lastRow + 1, sheet.getLastColumn());
     const data = range.getValues();
 
-    const startTime = new Date(); 
-    standardizeBookEntries(sheet, headers, data, lastRow);
-    const endTime = new Date();
+    const startTime = Date.now();
+    const standardValues = standardizeBookEntries(colIndexes, data);
+    console.log(`Batch ${lastRow}-${endRow} processed in ${Date.now() - startTime}ms`);
 
-    const executionTime = endTime - startTime;
-    console.log (" Total time to execute batch standardization: " + executionTime + "ms");
+    newSheet.getRange(lastRow, 1, data.length, data[0].length).setValues(
+      data.map((row, i) =>
+        row.map((val, j) => {
+          return j === colIndexes['book title'] ? standardValues[i][0] :
+                 j === colIndexes['book author'] ? standardValues[i][1] :
+                 j === colIndexes['last reviewed'] ? formattedDateTime : val;
+        })
+      )
+    );
 
-    PropertiesService.getScriptProperties().setProperty('lastProcessedRow', endRow + 1); // Save last processed row
-    
-    if (endRow < maxRows) { // If not all rows processed, trigger again
-      Utilities.sleep(1000); // 1 second delay to avoid trigger limits
-      processData(sheet, maxRows, batchSize, headers, formattedDateTime); 
-      return; 
-    } 
+    lastRow = endRow + 1;
+    PropertiesService.getScriptProperties().setProperty('lastProcessedRow', lastRow);
+
+    if (lastRow <= maxRows) Utilities.sleep(1000); // Rate limiting
+
   }
 }
 
 function runStandardizationService(){
-  // Setup
-  // steps run once
-
   console.time("processData");
 
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Dashboard source");
   const maxRows = sheet.getLastRow(); 
   const batchSize = 500; // Number of rows to process per batch
-  const [headers, ...data_unused] = sheet.getDataRange().getValues();
 
-  // Add "Last Reviewed" timestamp
-  const now = new Date();
-  const formattedDateTime = Utilities.formatDate(now, Session.getScriptTimeZone(), "MM/dd/yyyy HH:mm:ss");
+  const formattedDateTime = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "MM/dd/yyyy");
 
-  // If all rows are processed, reset 'lastProcessedRow'
-  // Use only for testing.
-  PropertiesService.getScriptProperties().deleteProperty('lastProcessedRow'); 
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const colIndexes = headers.reduce((acc, header, i) => {
+    if (['Book Title:', 'Book Author:', 'Last Reviewed:'].includes(header)) {
+      acc[header.replace(':', '').toLowerCase()] = i;
+    }
+    return acc;
+  }, {});
 
-  processData(sheet, maxRows, batchSize, headers, formattedDateTime);
+  // Optionally reset lastProcessedRow for testing
+  // PropertiesService.getScriptProperties().deleteProperty('lastProcessedRow'); 
+
+  // Create a new sheet to save the standardized information
+  const newSheet = SpreadsheetApp.getActiveSpreadsheet().insertSheet("Standardized Book Data - " + formattedDateTime); 
+  newSheet.getRange(1, 1, 1, sheet.getLastColumn()).setValues([headers]);
+
+  processData(sheet, maxRows, batchSize, colIndexes, formattedDateTime, newSheet);
   
   console.timeEnd("processData");
 
   return;
-}
-
-// Time-driven trigger (set this up in your Apps Script project triggers)
-function weeklyTrigger() {
-  runService(); 
 }
 
 function onOpen() {
