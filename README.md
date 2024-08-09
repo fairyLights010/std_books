@@ -30,3 +30,10 @@ This Google Apps Script automates the process of standardizing book entries in a
 * Google Apps Script: The script is designed to run within the Google Apps Script environment.
 * Google Books API: Used to fetch book information.
 * Google Sheets API: Used to interact with spreadsheets.
+
+# Future Enhancements
+* Precise Matching: Implement a fuzzy matching algorithm, such as Levenshtein distance (would be the simplest and most flexible), to improve the accuracy of book title matching against the Google Books database. This will help handle search returns that might not match the titles as expected.
+* User Experience Improvements:
+  * Introduce a progress bar to visually indicate the processing status, to allow users to gauge the remaining time.
+  * Add a "Completed" alert to notify the user when the standardization process is finished.
+* Error Handling and Logging: Expand the current error handling to include more robust logging and recovery mechanisms. This will help diagnose and address potential issues more effectively.
